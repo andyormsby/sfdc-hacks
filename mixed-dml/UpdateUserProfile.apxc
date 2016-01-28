@@ -1,0 +1,49 @@
+/* 
+ * Asynchronous method to update Users, Permission Set Licence Assignments and Permission Set Assignments.
+ * Supports the EnableAnalyticsForUser trigger on Approval Requests.
+ * 
+ * No Warranty. For demonstration purposes only.
+ * Andy Ormsby aormsby@salesforce.com 2015
+ */
+
+global class UpdateUserProfile {
+    global class UpdateSpec {
+        ID userid;
+        ID profileid;
+        String accessgroup;
+        
+        global UpdateSpec(ID u, ID p, String a) {
+            userid = u;
+            profileid = p;
+            accessgroup = a;
+        }
+    }
+    
+	@future
+    public static void processUsersAndPermissions(String jsonUserString, String jsonPermString, ID permSetLicenseId) {
+        List<PermissionSetLicenseAssign> psla = new List<PermissionSetLicenseAssign>();
+        
+        List<UpdateSpec> specs = (List<UpdateSpec>) JSON.deserialize(jsonUserString, List<UpdateSpec>.class);
+        
+        Map<Id, UpdateSpec> usermap = new Map<Id, UpdateSpec>();
+        for (UpdateSpec each : specs) {
+            usermap.put(each.userid, each);
+        }
+        
+        List<User> users = [ SELECT Id, ProfileId, Access_Group__c from User WHERE Id IN :usermap.keySet() ];
+        
+        for (User each : users) {
+            each.profileId = usermap.get(each.id).profileid;
+            each.Access_Group__c = usermap.get(each.id).accessgroup;
+            psla.add(new PermissionSetLicenseAssign(AssigneeId = each.id, 
+                                                   PermissionSetLicenseId = permSetLicenseId));
+        }
+        update users;
+    	insert psla;
+        
+        List<PermissionSetAssignment> perms 
+            = (List<PermissionSetAssignment>) JSON.deserialize(jsonPermString, 
+                                                               List<PermissionSetAssignment>.class);
+        insert perms;
+    }
+}

@@ -1,0 +1,74 @@
+/*
+ * When an Approval Request is saved with "Approved" status, "Add" as the request type
+ * and a the value 'Wave Analytics" in the subcategory field, this trigger will:
+ * 0. Find the user whose External ID matches the "Beneficiary's Employee ID" in the approval request. 
+ * 1. Assign the required profile (as defined by the "Approval Request Setting" custom setting).
+ * 2. Assign the "Analytics Cloud Builder" permission license to the user.
+ * 3. Assign either the Sage Analytics Cloud Explorer or Sage Analytics Cloud Builder permission
+ * set to the user, depending on the value of Feature in the approval request.
+ * 4. Copy the value of Access Group in the approval request to the Access Group field on the user
+ * record.
+ * 5. Update the Approval Request status field to "Provisioned".
+ * 
+ * No Warranty. For demonstration purposes only.
+ * Andy Ormsby aormsby@salesforce.com 2015
+ */
+trigger EnableAnalyticsForUser on Approval_Request__c (before insert, before update) {
+
+    // The approval request field Sub_Category__c should have the value of this constant
+    // in order for the trigger to take effect. This value is also used to look up the custom
+    // setting for the name of the profile to be assigned to users granted Wave permissions.
+    static String SUBCATEGORY_FOR_PROFILE = 'Wave Analytics';
+
+    Set<String> users = new Set<String>();
+    Map<String,Approval_Request__c> armap = new Map<String,Approval_Request__c>();
+    List<PermissionSetAssignment> assignments = new List<PermissionSetAssignment>();
+    List<UpdateUserProfile.UpdateSpec> updates = new List<UpdateUserProfile.UpdateSpec>();
+    
+    PermissionSetLicense cloudBuilderLicense = [ SELECT Id FROM PermissionSetLicense WHERE MasterLabel = 'Analytics Cloud Builder'];
+    PermissionSet explorer = [ SELECT Id FROM PermissionSet WHERE Name = 'Sage_Analytics_Cloud_Explorer'];
+    PermissionSet builder = [ SELECT Id FROM PermissionSet WHERE Name = 'Sage_Analytics_Cloud_Builder'];
+    
+    for (Approval_Request__c ar: Trigger.new) {
+        
+        // Pick out those requests which are valid:
+        // Approved, Subcategory = Analytics
+        // Feature = Wave...
+        // Action Requested = Add
+        if (( ar.Approval_Status__c == 'Approved' )
+            && ( ar.Sub_Category__c == SUBCATEGORY_FOR_PROFILE )
+            && ( ar.Action_Requested__c == 'Add' )) {
+            	System.debug('Approval for '+ar.Employee_ID__c);
+                armap.put(ar.Employee_ID__c, ar);
+                
+                // NB - because the provisioning is done in a @future method, 
+                // we don't actually know whether it has succeeded, so some more
+                // work would be needed to check this.
+                ar.Approval_Status__c = 'Provisioned'; // maybe :-)
+        }        
+    }
+    
+    Id profileId = [SELECT Id FROM Profile WHERE Name 
+                    = :Approval_Request_Setting__c.getInstance(SUBCATEGORY_FOR_PROFILE).To_Be_Profile__c].Id;
+    
+    for (User u : [SELECT Id, External_Id__c FROM User WHERE External_Id__c in :armap.keySet()]) {
+        System.debug('Adding update request for user: '+u);
+        System.debug('profileid will be '+profileid);
+        updates.add(new UpdateUserProfile.UpdateSpec(u.id, 
+                                                     profileid,
+                                                     armap.get(u.External_Id__c).Access_Group__c));
+        
+        // add a permission set for the specified user / feature combination
+		if (armap.get(u.External_Id__c).Feature__c == 'Wave Analytics - Explorer Licence') {
+        	assignments.add(new PermissionSetAssignment(AssigneeId = u.id, PermissionSetId = explorer.Id));
+        } else if (armap.get(u.External_Id__c).Feature__c == 'Wave Analytics - Builder Licence') {
+            assignments.add(new PermissionSetAssignment(AssigneeId = u.id, PermissionSetId = builder.Id));
+        }
+    }
+        
+    // Updating the User records has to be done in a @future method as it
+    // otherwise causes a mixed DML error.
+    UpdateUserProfile.processUsersAndPermissions(JSON.serialize(updates), 
+                                                 JSON.serialize(assignments), 
+                                                 cloudBuilderLicense.Id);
+}
